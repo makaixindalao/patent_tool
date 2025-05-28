@@ -60,17 +60,35 @@ class PatentAssistant:
         patent_ideas = []
         for i, result in enumerate(results):
             if isinstance(result, dict) and "error" not in result:
-                # 添加ID和生成时间
-                result["id"] = f"idea_{i+1}"
-                result["generated_at"] = self._get_current_time()
-                patent_ideas.append(result)
+                # 验证必要字段
+                if "title" in result and "features" in result:
+                    # 添加ID和生成时间
+                    result["id"] = f"idea_{i+1}"
+                    result["generated_at"] = self._get_current_time()
+                    patent_ideas.append(result)
+                else:
+                    # 字段不完整
+                    error_idea = {
+                        "id": f"idea_{i+1}",
+                        "title": result.get("title", f"创意 #{i+1}"),
+                        "features": result.get("features", ["生成的内容格式不完整"]),
+                        "error": "生成的JSON格式不完整",
+                        "generated_at": self._get_current_time()
+                    }
+                    patent_ideas.append(error_idea)
             else:
                 # 处理错误情况
+                error_message = "未知错误"
+                if isinstance(result, dict) and "error" in result:
+                    error_message = str(result["error"])
+                elif isinstance(result, str):
+                    error_message = result
+                
                 error_idea = {
                     "id": f"idea_{i+1}",
                     "title": f"生成失败 #{i+1}",
                     "features": ["生成过程中出现错误"],
-                    "error": str(result.get("error", "未知错误")),
+                    "error": error_message,
                     "generated_at": self._get_current_time()
                 }
                 patent_ideas.append(error_idea)
@@ -102,6 +120,11 @@ class PatentAssistant:
             temperature=temperature
         )
         
+        # 检查是否有错误
+        status = "draft"
+        if result.startswith("API 调用错误:"):
+            status = "error"
+        
         # 构建专利文档结构
         patent_doc = {
             "id": f"patent_{len(self.patents) + 1}",
@@ -109,7 +132,7 @@ class PatentAssistant:
             "features": features,
             "content": result,
             "generated_at": self._get_current_time(),
-            "status": "draft"
+            "status": status
         }
         
         # 线程安全地添加到专利列表

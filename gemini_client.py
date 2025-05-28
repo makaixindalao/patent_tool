@@ -5,6 +5,7 @@ Gemini API 客户端封装
 
 from openai import OpenAI
 import os
+import time
 from typing import Optional, List, Dict, Any
 import json
 import concurrent.futures
@@ -43,7 +44,8 @@ class GeminiClient:
         prompt: str, 
         system_prompt: str = "You are a helpful assistant.",
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        max_retries: int = 3
     ) -> str:
         """
         生成内容
@@ -53,34 +55,47 @@ class GeminiClient:
             system_prompt: 系统提示
             temperature: 温度参数，控制随机性
             max_tokens: 最大令牌数
+            max_retries: 最大重试次数
             
         Returns:
             生成的文本内容
         """
-        try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-            
-            kwargs = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": temperature
-            }
-            
-            if max_tokens:
-                kwargs["max_tokens"] = max_tokens
-            
-            response = self.client.chat.completions.create(**kwargs)
-            
-            if response.choices and response.choices[0].message and response.choices[0].message.content:
-                return response.choices[0].message.content
-            else:
-                return "模型没有返回预期的内容"
+        for attempt in range(max_retries):
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ]
                 
-        except Exception as e:
-            return f"API 调用错误: {str(e)}"
+                kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": temperature
+                }
+                
+                if max_tokens:
+                    kwargs["max_tokens"] = max_tokens
+                
+                response = self.client.chat.completions.create(**kwargs)
+                
+                if response.choices and response.choices[0].message and response.choices[0].message.content:
+                    return response.choices[0].message.content
+                else:
+                    return "模型没有返回预期的内容"
+                    
+            except Exception as e:
+                error_msg = str(e)
+                
+                # 检查是否是网络或临时错误
+                if attempt < max_retries - 1 and any(keyword in error_msg.lower() for keyword in 
+                    ['timeout', 'connection', 'network', 'rate limit', '429', '503', '502']):
+                    wait_time = (attempt + 1) * 2  # 指数退避
+                    time.sleep(wait_time)
+                    continue
+                
+                return f"API 调用错误: {error_msg}"
+        
+        return "API 调用错误: 达到最大重试次数"
     
     def generate_json_content(
         self, 
@@ -101,16 +116,36 @@ class GeminiClient:
         """
         try:
             content = self.generate_content(prompt, system_prompt, temperature)
+            
+            # 检查是否是错误响应
+            if content.startswith("API 调用错误:"):
+                return {"error": content}
+            
             # 尝试提取 JSON 内容
+            json_content = content
             if "```json" in content:
                 json_start = content.find("```json") + 7
                 json_end = content.find("```", json_start)
                 if json_end != -1:
-                    content = content[json_start:json_end].strip()
+                    json_content = content[json_start:json_end].strip()
+            elif "```" in content:
+                # 处理没有json标记的代码块
+                json_start = content.find("```") + 3
+                json_end = content.find("```", json_start)
+                if json_end != -1:
+                    json_content = content[json_start:json_end].strip()
             
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return {"error": "无法解析 JSON 响应", "raw_content": content}
+            # 清理JSON内容
+            json_content = json_content.strip()
+            if json_content.startswith('```'):
+                json_content = json_content[3:].strip()
+            if json_content.endswith('```'):
+                json_content = json_content[:-3].strip()
+            
+            return json.loads(json_content)
+            
+        except json.JSONDecodeError as e:
+            return {"error": f"无法解析 JSON 响应: {str(e)}", "raw_content": content}
         except Exception as e:
             return {"error": f"生成 JSON 内容时出错: {str(e)}"}
     
