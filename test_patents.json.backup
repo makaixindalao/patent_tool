@@ -1,0 +1,18 @@
+{
+  "patents": [
+    {
+      "id": "patent_1748592961_1",
+      "title": "测试专利标题",
+      "features": [
+        "特性1",
+        "特性2",
+        "特性3"
+      ],
+      "content": "API 调用错误: Connection error.",
+      "generated_at": "2025-05-30 16:16:01",
+      "status": "error"
+    }
+  ],
+  "last_updated": "2025-05-30 16:16:01",
+  "total_count": 1
+}

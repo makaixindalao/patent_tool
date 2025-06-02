@@ -6,6 +6,7 @@
 
 import streamlit as st
 import json
+import os
 from datetime import datetime
 from patent_assistant import PatentAssistant
 from gemini_client import GeminiClient
@@ -172,14 +173,28 @@ def setup_sidebar():
 
 
 def create_patent_assistant(config):
-    """创建专利助手实例"""
+    """创建或获取专利助手实例"""
     if config['api_key'] and config['model']:
         try:
-            return PatentAssistant(
+            # 检查是否已有实例且配置相同
+            if ('patent_assistant' in st.session_state and 
+                st.session_state.patent_assistant is not None and
+                hasattr(st.session_state, 'assistant_config') and
+                st.session_state.assistant_config == config):
+                return st.session_state.patent_assistant
+            
+            # 创建新的专利助手实例
+            assistant = PatentAssistant(
                 api_key=config['api_key'],
                 model=config['model'],
                 base_url=config['base_url']
             )
+            
+            # 保存到会话状态
+            st.session_state.patent_assistant = assistant
+            st.session_state.assistant_config = config.copy()
+            
+            return assistant
         except Exception as e:
             st.error(f"创建专利助手失败：{str(e)}")
             return None
@@ -214,40 +229,62 @@ def tab_generate_ideas():
         generate_btn = st.button("🚀 开始生成", type="primary", key="generate_ideas_btn")
     
     if generate_btn:
+        # 显示配置信息用于调试
+        st.write("🔧 当前配置:")
+        st.write(f"- API密钥: {'已配置' if config.get('api_key') else '未配置'}")
+        st.write(f"- 模型: {config.get('model', '未配置')}")
+        st.write(f"- 基础URL: {config.get('base_url', '未配置')}")
+        st.write(f"- 线程数: {config.get('max_workers_ideas', '未配置')}")
+        st.write(f"- 温度: {config.get('temperature', '未配置')}")
+        
         assistant = create_patent_assistant(config)
         if assistant:
-            with st.spinner("🔄 正在生成专利创意..."):
-                # 显示进度条
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                start_time = time.time()
-                
-                # 生成专利创意
-                ideas = assistant.generate_patent_ideas(
-                    count=count,
-                    temperature=config['temperature'],
-                    max_workers=config['max_workers_ideas']
-                )
-                
-                end_time = time.time()
-                progress_bar.progress(100)
-                
-                st.session_state.patent_ideas = ideas
-                
-                # 显示结果统计
-                success_count = len([idea for idea in ideas if "error" not in idea])
-                error_count = count - success_count
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("总数量", count)
-                with col2:
-                    st.metric("成功", success_count)
-                with col3:
-                    st.metric("失败", error_count)
-                with col4:
-                    st.metric("耗时", f"{end_time - start_time:.1f}秒")
+            try:
+                with st.spinner("🔄 正在生成专利创意..."):
+                    # 显示进度条
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    start_time = time.time()
+                    
+                    # 生成专利创意
+                    ideas = assistant.generate_patent_ideas(
+                        count=count,
+                        temperature=config.get('temperature', 0.8),
+                        max_workers=config.get('max_workers_ideas', 3)
+                    )
+                    
+                    end_time = time.time()
+                    progress_bar.progress(100)
+                    
+                    st.session_state.patent_ideas = ideas
+                    
+                    # 显示结果统计
+                    success_count = len([idea for idea in ideas if "error" not in idea])
+                    error_count = count - success_count
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("总数量", count)
+                    with col2:
+                        st.metric("成功", success_count)
+                    with col3:
+                        st.metric("失败", error_count)
+                    with col4:
+                        st.metric("耗时", f"{end_time - start_time:.1f}秒")
+                        
+                    # 显示详细结果
+                    if success_count > 0:
+                        st.success(f"✅ 成功生成 {success_count} 个专利创意！")
+                    if error_count > 0:
+                        st.warning(f"⚠️ {error_count} 个创意生成失败")
+                        
+            except Exception as e:
+                st.error(f"❌ 生成过程中出现错误: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+        else:
+            st.error("❌ 无法创建专利助手，请检查配置")
     
     # 显示生成的创意
     if st.session_state.patent_ideas:
@@ -322,19 +359,31 @@ def tab_generate_patent():
         if st.button("🚀 生成完整专利", type="primary", key="generate_single_patent_btn"):
             assistant = create_patent_assistant(config)
             if assistant:
-                with st.spinner("📝 正在生成完整专利文档..."):
-                    start_time = time.time()
-                    
-                    patent = assistant.generate_full_patent(
-                        title=selected_idea['title'],
-                        features=selected_idea['features'],
-                        temperature=config['patent_temperature']
-                    )
-                    
-                    end_time = time.time()
-                    
-                    st.session_state.current_patent = patent
-                    st.success(f"✅ 专利生成完成！耗时 {end_time - start_time:.1f} 秒")
+                try:
+                    with st.spinner("📝 正在生成完整专利文档..."):
+                        start_time = time.time()
+                        
+                        patent = assistant.generate_full_patent(
+                            title=selected_idea['title'],
+                            features=selected_idea['features'],
+                            temperature=config.get('patent_temperature', 0.7)
+                        )
+                        
+                        end_time = time.time()
+                        
+                        st.session_state.current_patent = patent
+                        
+                        if patent['status'] == 'draft':
+                            st.success(f"✅ 专利生成完成！耗时 {end_time - start_time:.1f} 秒")
+                        else:
+                            st.error(f"❌ 专利生成失败: {patent['content'][:200]}...")
+                            
+                except Exception as e:
+                    st.error(f"❌ 生成过程中出现错误: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+            else:
+                st.error("❌ 无法创建专利助手，请检查配置")
     
     elif generation_mode == "手动输入":
         title = st.text_input("专利标题", placeholder="输入专利标题", key="manual_title_input")
@@ -349,19 +398,31 @@ def tab_generate_patent():
         if st.button("🚀 生成完整专利", type="primary", key="generate_manual_patent_btn") and title and features:
             assistant = create_patent_assistant(config)
             if assistant:
-                with st.spinner("📝 正在生成完整专利文档..."):
-                    start_time = time.time()
-                    
-                    patent = assistant.generate_full_patent(
-                        title=title,
-                        features=features,
-                        temperature=config['patent_temperature']
-                    )
-                    
-                    end_time = time.time()
-                    
-                    st.session_state.current_patent = patent
-                    st.success(f"✅ 专利生成完成！耗时 {end_time - start_time:.1f} 秒")
+                try:
+                    with st.spinner("📝 正在生成完整专利文档..."):
+                        start_time = time.time()
+                        
+                        patent = assistant.generate_full_patent(
+                            title=title,
+                            features=features,
+                            temperature=config.get('patent_temperature', 0.7)
+                        )
+                        
+                        end_time = time.time()
+                        
+                        st.session_state.current_patent = patent
+                        
+                        if patent['status'] == 'draft':
+                            st.success(f"✅ 专利生成完成！耗时 {end_time - start_time:.1f} 秒")
+                        else:
+                            st.error(f"❌ 专利生成失败: {patent['content'][:200]}...")
+                            
+                except Exception as e:
+                    st.error(f"❌ 生成过程中出现错误: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+            else:
+                st.error("❌ 无法创建专利助手，请检查配置")
     
     elif generation_mode == "批量生成":
         if not st.session_state.patent_ideas:
@@ -477,12 +538,20 @@ def tab_manage_patents():
     all_patents = assistant.get_patents()
     
     if not all_patents:
-        st.info("📝 暂无专利文档，请先生成一些专利")
+        st.info("暂无专利文档，请先生成一些专利")
+        
+        # 显示数据文件信息
+        if hasattr(assistant, 'data_file'):
+            st.write(f"💾 数据文件: {assistant.data_file}")
+            if os.path.exists(assistant.data_file):
+                st.write("✅ 数据文件存在")
+            else:
+                st.write("❌ 数据文件不存在")
         return
     
     # 显示统计信息
     stats = assistant.get_statistics()
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("总专利数", stats['total_patents'])
     with col2:
@@ -491,48 +560,75 @@ def tab_manage_patents():
         st.metric("错误", stats['error_patents'])
     with col4:
         st.metric("成功率", f"{stats['success_rate']:.1f}%")
+    with col5:
+        if hasattr(assistant, 'data_file'):
+            file_size = os.path.getsize(assistant.data_file) if os.path.exists(assistant.data_file) else 0
+            st.metric("数据文件", f"{file_size/1024:.1f}KB")
     
     # 专利列表
     st.subheader("📋 专利列表")
     
-    for patent in all_patents:
-        with st.expander(f"📄 {patent['title']} ({patent['id']})"):
+    # 添加排序选项
+    sort_options = ["生成时间(最新)", "生成时间(最旧)", "标题(A-Z)", "状态"]
+    sort_by = st.selectbox("排序方式", sort_options, key="patent_sort_select")
+    
+    # 排序专利列表
+    if sort_by == "生成时间(最新)":
+        all_patents = sorted(all_patents, key=lambda x: x.get('generated_at', ''), reverse=True)
+    elif sort_by == "生成时间(最旧)":
+        all_patents = sorted(all_patents, key=lambda x: x.get('generated_at', ''))
+    elif sort_by == "标题(A-Z)":
+        all_patents = sorted(all_patents, key=lambda x: x.get('title', ''))
+    elif sort_by == "状态":
+        all_patents = sorted(all_patents, key=lambda x: x.get('status', ''))
+    
+    for i, patent in enumerate(all_patents):
+        with st.expander(f"📄 {patent['title']} ({patent['id']}) - {patent.get('status', 'unknown')}"):
             col1, col2 = st.columns([3, 1])
             
             with col1:
+                st.write(f"**ID：** {patent['id']}")
                 st.write(f"**状态：** {patent['status']}")
                 st.write(f"**生成时间：** {patent['generated_at']}")
                 
-                if 'features' in patent:
+                if 'updated_at' in patent:
+                    st.write(f"**更新时间：** {patent['updated_at']}")
+                
+                if 'features' in patent and patent['features']:
                     st.write("**核心特性：**")
                     for feature in patent['features']:
                         st.write(f"• {feature}")
                 
                 # 显示内容预览
-                content_preview = patent['content'][:200] + "..." if len(patent['content']) > 200 else patent['content']
+                content_preview = patent['content'][:300] + "..." if len(patent['content']) > 300 else patent['content']
                 st.text_area(
                     "内容预览",
                     value=content_preview,
-                    height=100,
-                    key=f"preview_{patent['id']}"
+                    height=150,
+                    key=f"preview_{patent['id']}_{i}"
                 )
             
             with col2:
-                if st.button(f"查看详情", key=f"view_{patent['id']}"):
+                st.write("**操作**")
+                
+                if st.button(f"查看详情", key=f"view_{patent['id']}_{i}"):
                     st.session_state.current_patent = patent
                     st.rerun()
                 
-                if st.button(f"优化", key=f"opt_{patent['id']}"):
+                if st.button(f"优化", key=f"opt_{patent['id']}_{i}"):
                     st.session_state.optimize_patent = patent
                     st.rerun()
                 
-                if st.button(f"删除", key=f"del_{patent['id']}", type="secondary"):
-                    assistant.delete_patent(patent['id'])
-                    st.rerun()
+                if st.button(f"删除", key=f"del_{patent['id']}_{i}", type="secondary"):
+                    if assistant.delete_patent(patent['id']):
+                        st.success("✅ 专利已删除")
+                        st.rerun()
+                    else:
+                        st.error("❌ 删除失败")
     
     # 批量操作
     st.subheader("📦 批量操作")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         if st.button("📥 导出所有专利(JSON)", key="export_all_json_btn"):
@@ -555,6 +651,13 @@ def tab_manage_patents():
                 mime="text/plain",
                 key="download_all_text_btn"
             )
+    
+    with col3:
+        if st.button("🔄 刷新数据", key="refresh_patents_btn"):
+            # 重新加载数据
+            assistant._load_patents()
+            st.success("✅ 数据已刷新")
+            st.rerun()
 
 
 def tab_optimize_patent():

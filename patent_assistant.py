@@ -1,6 +1,6 @@
 """
 专利撰写助手
-提供专利创意生成和完整专利文档撰写功能，支持多线程处理
+提供专利创意生成和完整专利文档撰写功能，支持多线程处理和数据持久化
 """
 
 from gemini_client import GeminiClient
@@ -9,12 +9,14 @@ from typing import List, Dict, Any, Optional
 import json
 import concurrent.futures
 import threading
+import os
+from datetime import datetime
 
 
 class PatentAssistant:
-    """专利撰写助手类，支持多线程处理"""
+    """专利撰写助手类，支持多线程处理和数据持久化"""
     
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp", base_url: str = None):
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp", base_url: str = None, data_file: str = "patents_data.json"):
         """
         初始化专利助手
         
@@ -22,11 +24,74 @@ class PatentAssistant:
             api_key: API 密钥
             model: 使用的模型名称
             base_url: 自定义API基础URL
+            data_file: 数据存储文件路径
         """
         self.client = GeminiClient(api_key, model, base_url)
         self.templates = PromptTemplates()
+        self.data_file = data_file
         self.patents = []  # 存储生成的专利
         self._lock = threading.Lock()  # 线程锁，保护共享资源
+        
+        # 加载已有的专利数据
+        self._load_patents()
+    
+    def _load_patents(self):
+        """从文件加载专利数据"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.patents = data.get('patents', [])
+                    print(f"✅ 已加载 {len(self.patents)} 个专利记录")
+            else:
+                print("📝 未找到历史数据文件，将创建新的数据存储")
+        except Exception as e:
+            print(f"⚠️ 加载专利数据失败: {str(e)}")
+            self.patents = []
+    
+    def _save_patents(self):
+        """保存专利数据到文件"""
+        try:
+            data = {
+                "patents": self.patents,
+                "last_updated": self._get_current_time(),
+                "total_count": len(self.patents)
+            }
+            
+            # 创建备份 - 在Windows中安全地处理文件操作
+            backup_file = f"{self.data_file}.backup"
+            if os.path.exists(self.data_file):
+                # 如果备份文件已存在，先删除它
+                if os.path.exists(backup_file):
+                    try:
+                        os.remove(backup_file)
+                    except OSError:
+                        pass  # 忽略删除失败的情况
+                
+                # 创建备份
+                try:
+                    import shutil
+                    shutil.copy2(self.data_file, backup_file)
+                except Exception as e:
+                    print(f"⚠️ 创建备份失败: {str(e)}")
+            
+            # 保存新数据
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            print(f"💾 已保存 {len(self.patents)} 个专利记录")
+            
+        except Exception as e:
+            print(f"❌ 保存专利数据失败: {str(e)}")
+            # 如果保存失败，尝试恢复备份
+            backup_file = f"{self.data_file}.backup"
+            if os.path.exists(backup_file):
+                try:
+                    import shutil
+                    shutil.copy2(backup_file, self.data_file)
+                    print("🔄 已从备份恢复数据")
+                except Exception as restore_error:
+                    print(f"❌ 恢复备份失败: {str(restore_error)}")
     
     def generate_patent_ideas(
         self, 
@@ -127,7 +192,7 @@ class PatentAssistant:
         
         # 构建专利文档结构
         patent_doc = {
-            "id": f"patent_{len(self.patents) + 1}",
+            "id": f"patent_{int(datetime.now().timestamp())}_{len(self.patents) + 1}",
             "title": title,
             "features": features,
             "content": result,
@@ -135,9 +200,10 @@ class PatentAssistant:
             "status": status
         }
         
-        # 线程安全地添加到专利列表
+        # 线程安全地添加到专利列表并保存
         with self._lock:
             self.patents.append(patent_doc)
+            self._save_patents()
         
         return patent_doc
     
@@ -217,9 +283,10 @@ class PatentAssistant:
                         "status": "error"
                     }
         
-        # 线程安全地添加到专利列表
+        # 线程安全地添加到专利列表并保存
         with self._lock:
             self.patents.extend([p for p in patents if p is not None])
+            self._save_patents()
         
         return patents
     
@@ -268,6 +335,7 @@ class PatentAssistant:
                 if patent["id"] == patent_id:
                     self.patents[i].update(updates)
                     self.patents[i]["updated_at"] = self._get_current_time()
+                    self._save_patents()
                     return True
         return False
     
@@ -277,6 +345,7 @@ class PatentAssistant:
             for i, patent in enumerate(self.patents):
                 if patent["id"] == patent_id:
                     del self.patents[i]
+                    self._save_patents()
                     return True
         return False
     
@@ -302,7 +371,6 @@ class PatentAssistant:
     
     def _get_current_time(self) -> str:
         """获取当前时间字符串"""
-        from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     def get_statistics(self) -> Dict[str, Any]:
